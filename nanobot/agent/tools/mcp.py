@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+import json
 from typing import Any
 
 import httpx
@@ -74,11 +75,162 @@ def _normalize_schema_for_openai(schema: Any) -> dict[str, Any]:
     return normalized
 
 
+def _prune_compacted_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        compacted = {key: _prune_compacted_value(item) for key, item in value.items()}
+        return {
+            key: item for key, item in compacted.items()
+            if item not in (None, "", [], {})
+        }
+    if isinstance(value, list):
+        compacted = [_prune_compacted_value(item) for item in value]
+        return [item for item in compacted if item not in (None, "", [], {})]
+    return value
+
+
+def _compact_vkusvill_product_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+
+    keep_property_names = {
+        "Состав",
+        "Пищевая и энергетическая ценность в 100 г",
+    }
+    price = item.get("price") if isinstance(item.get("price"), dict) else {}
+    weight = item.get("weight") if isinstance(item.get("weight"), dict) else {}
+    rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
+    properties = item.get("properties") if isinstance(item.get("properties"), list) else []
+
+    compact_item = {
+        "id": item.get("id"),
+        "xml_id": item.get("xml_id"),
+        "name": item.get("name"),
+        "description": item.get("description"),
+        "price": {
+            "current": price.get("current"),
+            "old": price.get("old"),
+            "discount_percent": price.get("discount_percent"),
+        },
+        "unit": item.get("unit"),
+        "weight": {
+            "value": weight.get("value"),
+            "unit": weight.get("unit"),
+        },
+        "rating": {
+            "average": rating.get("average"),
+            "count": rating.get("count"),
+        },
+        "properties": [
+            {
+                "name": prop.get("name"),
+                "value": prop.get("value"),
+            }
+            for prop in properties
+            if isinstance(prop, dict) and prop.get("name") in keep_property_names
+        ],
+    }
+    compact_item = _prune_compacted_value(compact_item)
+    if not compact_item or "xml_id" not in compact_item or "name" not in compact_item:
+        return None
+    return compact_item
+
+
+def _compact_vkusvill_products_search_result(text: str) -> str:
+    """Compact VkusVill search JSON payloads for model-facing tool output."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+
+    if not isinstance(payload, dict):
+        return text
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return text
+
+    meta = data.get("meta")
+    items = data.get("items")
+    if not isinstance(meta, dict) or not isinstance(items, list):
+        return text
+
+    compact_items: list[dict[str, Any]] = []
+    for item in items:
+        compact_item = _compact_vkusvill_product_item(item)
+        if compact_item is None:
+            continue
+        compact_items.append(compact_item)
+    if not compact_items:
+        return text
+
+    compact_payload = _prune_compacted_value({
+        "ok": payload.get("ok"),
+        "data": {
+            "meta": meta,
+            "items": compact_items,
+        },
+    })
+    return json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_vkusvill_product_analogs_result(text: str) -> str:
+    """Compact VkusVill analogs JSON payloads for model-facing tool output."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+
+    if not isinstance(payload, dict):
+        return text
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return text
+
+    product_id = data.get("product_id")
+    total = data.get("total")
+    products = data.get("products")
+    if not isinstance(products, list):
+        return text
+
+    compact_products: list[dict[str, Any]] = []
+    for product in products:
+        compact_product = _compact_vkusvill_product_item(product)
+        if compact_product is None:
+            continue
+        compact_products.append(compact_product)
+    if not compact_products:
+        return text
+
+    compact_payload = _prune_compacted_value({
+        "ok": payload.get("ok"),
+        "data": {
+            "product_id": product_id,
+            "total": total,
+            "products": compact_products,
+        },
+    })
+    return json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_mcp_text_result(server_name: str, tool_name: str, text: str) -> str:
+    """Dispatch tool-specific MCP output compaction when a safe transform is known."""
+    transformers = {
+        ("vkusvill", "vkusvill_products_search"): _compact_vkusvill_products_search_result,
+        ("vkusvill", "vkusvill_product_analogs"): _compact_vkusvill_product_analogs_result,
+    }
+    transformer = transformers.get((server_name, tool_name))
+    if transformer is None:
+        return text
+    return transformer(text)
+
+
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a nanobot Tool."""
 
     def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._session = session
+        self._server_name = server_name
         self._original_name = tool_def.name
         self._name = f"mcp_{server_name}_{tool_def.name}"
         self._description = tool_def.description or tool_def.name
@@ -132,7 +284,8 @@ class MCPToolWrapper(Tool):
                 parts.append(block.text)
             else:
                 parts.append(str(block))
-        return "\n".join(parts) or "(no output)"
+        text = "\n".join(parts) or "(no output)"
+        return _compact_mcp_text_result(self._server_name, self._original_name, text)
 
 
 async def connect_mcp_servers(
