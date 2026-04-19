@@ -175,13 +175,21 @@ async def handle_health(request: web.Request) -> web.Response:
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float = 120.0) -> web.Application:
+def create_app(
+    agent_loop,
+    model_name: str = "nanobot",
+    request_timeout: float = 120.0,
+    extra_routes: list[tuple[str, str, Any]] | None = None,
+) -> web.Application:
     """Create the aiohttp application.
 
     Args:
-        agent_loop: An initialized AgentLoop instance.
-        model_name: Model name reported in responses.
+        agent_loop:    An initialized AgentLoop instance.
+        model_name:    Model name reported in responses.
         request_timeout: Per-request timeout in seconds.
+        extra_routes:  Additional routes from integrations, each a tuple of
+                       (method, path, handler), e.g.:
+                       [("GET", "/oauth/google_calendar/callback", my_handler)]
     """
     app = web.Application()
     app["agent_loop"] = agent_loop
@@ -192,4 +200,9 @@ def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float =
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
+
+    for method, path, handler in (extra_routes or []):
+        app.router.add_route(method, path, handler)
+        logger.debug("api: registered extra route {} {}", method, path)
+
     return app

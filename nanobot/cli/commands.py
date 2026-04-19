@@ -450,6 +450,16 @@ def _make_provider(config: Config):
     return provider
 
 
+def _build_gcal_routes(agent_loop, bus) -> list | None:
+    """Return extra_routes for the OAuth callback if Google Calendar is enabled."""
+    gcal_auth = getattr(agent_loop, "gcal_auth", None)
+    if gcal_auth is None:
+        return None
+    from nanobot.agent.tools.google_calendar.oauth_handler import make_gcal_oauth_handler
+    handler = make_gcal_oauth_handler(gcal_auth, bus)
+    return [("GET", "/oauth/google_calendar/callback", handler)]
+
+
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
     """Load config and optionally override the active workspace."""
     from nanobot.config.loader import load_config, set_config_path
@@ -552,6 +562,7 @@ def serve(
         provider_retry_mode=runtime_config.agents.defaults.provider_retry_mode,
         web_config=runtime_config.tools.web,
         exec_config=runtime_config.tools.exec,
+        google_calendar_config=runtime_config.tools.google_calendar,
         restrict_to_workspace=runtime_config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers=runtime_config.tools.mcp_servers,
@@ -572,7 +583,8 @@ def serve(
         )
     console.print()
 
-    api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
+    extra_routes = _build_gcal_routes(agent_loop, bus)
+    api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout, extra_routes=extra_routes)
 
     async def on_startup(_app):
         await agent_loop._connect_mcp()
@@ -641,6 +653,7 @@ def gateway(
         max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
         provider_retry_mode=config.agents.defaults.provider_retry_mode,
         exec_config=config.tools.exec,
+        google_calendar_config=config.tools.google_calendar,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
@@ -771,7 +784,31 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
+    gcal_routes = _build_gcal_routes(agent, bus)
+
     async def run():
+        from aiohttp import web as aio_web
+        from nanobot.api.server import create_app
+
+        api_runner = None
+        if gcal_routes:
+            # TODO: tech debt — gateway should expose its own HTTP server (gateway.port)
+            # and register OAuth callbacks there, instead of spinning up a separate
+            # AppRunner on api.port. Refactor when gateway gets a proper HTTP layer.
+            api_cfg = config.api
+            oauth_app = create_app(agent, extra_routes=gcal_routes)
+            api_runner = aio_web.AppRunner(oauth_app)
+            await api_runner.setup()
+            site = aio_web.TCPSite(api_runner, api_cfg.host, api_cfg.port)
+            await site.start()
+            await agent._connect_mcp()
+            console.print(
+                f"[green]✓[/green] Google Calendar OAuth callback: "
+                f"http://{api_cfg.host}:{api_cfg.port}/oauth/google_calendar/callback"
+            )
+        else:
+            await agent._connect_mcp()
+
         try:
             await cron.start()
             await heartbeat.start()
@@ -791,6 +828,8 @@ def gateway(
             cron.stop()
             agent.stop()
             await channels.stop_all()
+            if api_runner:
+                await api_runner.cleanup()
 
     asyncio.run(run())
 
@@ -849,6 +888,7 @@ def agent(
         max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
         provider_retry_mode=config.agents.defaults.provider_retry_mode,
         exec_config=config.tools.exec,
+        google_calendar_config=config.tools.google_calendar,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
