@@ -154,11 +154,27 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # seconds before a tool call is cancelled
     enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
 
+class GoogleCalendarConfig(Base):
+    """Google Calendar integration configuration."""
+
+    enable: bool = False
+    # OAuth app credentials from Google Cloud Console (identifies nanobot to Google)
+    client_id: str = ""
+    client_secret: str = ""
+    # Base URL of this server reachable by the browser after Google redirect
+    # For local use: http://localhost:8900 (same as api.port)
+    # For production: https://yourdomain.com
+    callback_base_url: str = "http://localhost:8900"
+    # Where to persist user tokens (access + refresh) between restarts
+    token_store_path: str = "~/.nanobot/gcal_tokens.json"
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    google_calendar: GoogleCalendarConfig = Field(default_factory=GoogleCalendarConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

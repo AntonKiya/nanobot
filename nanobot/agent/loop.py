@@ -36,7 +36,7 @@ from nanobot.utils.helpers import image_placeholder_text, truncate_text
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, WebToolsConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, GoogleCalendarConfig, WebToolsConfig
     from nanobot.cron.service import CronService
 
 
@@ -52,6 +52,7 @@ class _LoopHook(AgentHook):
         *,
         channel: str = "cli",
         chat_id: str = "direct",
+        sender_id: str = "unknown",
         message_id: str | None = None,
     ) -> None:
         self._loop = agent_loop
@@ -60,6 +61,7 @@ class _LoopHook(AgentHook):
         self._on_stream_end = on_stream_end
         self._channel = channel
         self._chat_id = chat_id
+        self._sender_id = sender_id
         self._message_id = message_id
         self._stream_buf = ""
 
@@ -94,7 +96,7 @@ class _LoopHook(AgentHook):
         for tc in context.tool_calls:
             args_str = json.dumps(tc.arguments, ensure_ascii=False)
             logger.info("Tool call: {}({})", tc.name, args_str[:200])
-        self._loop._set_tool_context(self._channel, self._chat_id, self._message_id)
+        self._loop._set_tool_context(self._channel, self._chat_id, self._message_id, self._sender_id)
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         u = context.usage or {}
@@ -104,6 +106,9 @@ class _LoopHook(AgentHook):
             u.get("completion_tokens", 0),
             u.get("cached_tokens", 0),
         )
+        for tc, result in zip(context.tool_calls, context.tool_results):
+            result_str = str(result)[:500]
+            logger.debug("Tool result: {}() → {}", tc.name, result_str)
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
         return self._loop._strip_think(content)
@@ -173,6 +178,7 @@ class AgentLoop:
         provider_retry_mode: str = "standard",
         web_config: WebToolsConfig | None = None,
         exec_config: ExecToolConfig | None = None,
+        google_calendar_config: GoogleCalendarConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
@@ -206,6 +212,8 @@ class AgentLoop:
         self.provider_retry_mode = provider_retry_mode
         self.web_config = web_config or WebToolsConfig()
         self.exec_config = exec_config or ExecToolConfig()
+        self.google_calendar_config = google_calendar_config
+        self.gcal_auth = None  # set by _register_default_tools if gcal is enabled
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
@@ -277,6 +285,18 @@ class AgentLoop:
             self.tools.register(
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
             )
+        if self.google_calendar_config and self.google_calendar_config.enable:
+            from nanobot.agent.tools.google_calendar import create_tools
+            from nanobot.agent.tools.google_calendar.auth import GoogleCalendarAuth
+            base = self.google_calendar_config.callback_base_url.rstrip("/")
+            self.gcal_auth = GoogleCalendarAuth(
+                client_id=self.google_calendar_config.client_id,
+                client_secret=self.google_calendar_config.client_secret,
+                redirect_uri=f"{base}/oauth/google_calendar/callback",
+                token_store_path=self.google_calendar_config.token_store_path,
+            )
+            for tool in create_tools(self.gcal_auth):
+                self.tools.register(tool)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -300,12 +320,16 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None, sender_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
         for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+        # Tools that need full user context (sender_id + channel + chat_id)
+        for tool in self.tools._tools.values():
+            if hasattr(tool, "set_user_context"):
+                tool.set_user_context(sender_id=sender_id, channel=channel, chat_id=chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -336,6 +360,7 @@ class AgentLoop:
         session: Session | None = None,
         channel: str = "cli",
         chat_id: str = "direct",
+        sender_id: str = "unknown",
         message_id: str | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop.
@@ -352,6 +377,7 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             channel=channel,
             chat_id=chat_id,
+            sender_id=sender_id,
             message_id=message_id,
         )
         hook: AgentHook = (
@@ -521,7 +547,7 @@ class AgentLoop:
             if self._restore_runtime_checkpoint(session):
                 self.sessions.save(session)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"), msg.sender_id)
             history = session.get_history(max_messages=0)
             current_role = "assistant" if msg.sender_id == "subagent" else "user"
             messages = self.context.build_messages(
@@ -531,7 +557,7 @@ class AgentLoop:
             )
             final_content, _, all_msgs = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
-                message_id=msg.metadata.get("message_id"),
+                sender_id=msg.sender_id, message_id=msg.metadata.get("message_id"),
             )
             self._save_turn(session, all_msgs, 1 + len(history))
             self._clear_runtime_checkpoint(session)
@@ -556,7 +582,7 @@ class AgentLoop:
 
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"), msg.sender_id)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
@@ -584,6 +610,7 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             session=session,
             channel=msg.channel, chat_id=msg.chat_id,
+            sender_id=msg.sender_id,
             message_id=msg.metadata.get("message_id"),
         )
 
