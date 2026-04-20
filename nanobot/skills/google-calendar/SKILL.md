@@ -22,10 +22,26 @@ Before any calendar operation, check whether the user is authorized:
 4. Execute the operation.
 5. Confirm what was done in a brief, human-readable response.
 
+## Events vs Tasks
+
+Google Calendar has two distinct entity types — always distinguish them:
+
+- **Event** (`gcal_*` calendar tools) — has a start and end time, occupies a slot in the schedule. Meetings, appointments, reminders with duration.
+- **Task** (`gcal_*` tasks tools) — has only a due date/time (single point), no duration. To-dos, checklists, things "to do by X".
+
+When the user asks "what do I have today" or "show my schedule" — **always** call **both** `gcal_list_events` and `gcal_list_tasks` for the requested period and present a unified list. Never show only events without tasks. Mark each item's type (e.g. "📅 Meeting with John 14:00–15:00" vs "✅ Submit report — due today").
+
+**Strict scope**: only show results for the period the user asked about. If asked about today — show today only. Do not add "upcoming tasks" or "tasks for the rest of the week" unless explicitly requested.
+
+When the user says "add a task / to-do / reminder" → `gcal_create_task`.
+When the user says "schedule a meeting / block time / add an appointment" → `gcal_create_event`.
+When ambiguous → default to event if a time range is given, task if only a deadline is given.
+
 ## Trigger Categories and Tools
 
 **View schedule / upcoming events**
-- Use `gcal_list_events` with `time_min` = now, `time_max` = end of requested period.
+- Use `gcal_list_events` with `time_min` = start of requested period, `time_max` = start of the NEXT day after the period ends.
+- `time_max` is exclusive — to include all-day events on April 20, use `time_max: 2026-04-21T00:00:00Z`, not `2026-04-20T23:59:59Z`.
 - Default range if not specified: next 7 days.
 
 **Search for a specific event**
@@ -48,6 +64,35 @@ Before any calendar operation, check whether the user is authorized:
 - Use `gcal_delete_event`.
 - Always confirm the event title and time with the user before deleting, unless they already identified it unambiguously.
 - If the target event is ambiguous, search first.
+
+**List tasks**
+- Use `gcal_list_tasks`. Optionally pass `due_min`/`due_max` to filter by date range.
+- `due_max` is exclusive — to include tasks due on April 20, set `due_max: 2026-04-21T00:00:00Z`.
+- Tasks with no due date are not returned when filtering by date — mention them separately if relevant.
+- User asks "show all tasks" → call without date filters, group: overdue → due today → upcoming → no deadline.
+- Only set `show_completed: true` when the user explicitly asks to see completed tasks.
+
+**Create a task**
+- Use `gcal_create_task`.
+- Required: `title`. Optional: `due` (RFC 3339), `notes`, `tasklist_id`.
+- `due` is a single deadline point, not a range. If the user says "by Friday", set `due` to end of Friday.
+- Default `tasklist_id`: `"@default"` (primary task list).
+
+**Complete a task**
+- Use `gcal_complete_task` with `task_id`.
+- If target is ambiguous, call `gcal_list_tasks` first.
+
+**Update a task**
+- Use `gcal_update_task` with only the fields that need to change.
+- If target is ambiguous, call `gcal_list_tasks` first.
+
+**Delete a task**
+- Use `gcal_delete_task`.
+- Always confirm the task title with the user before deleting unless already unambiguous.
+
+**List task lists**
+- Use `gcal_list_tasklists` when the user refers to a named list ("work tasks", "shopping").
+- Resolve the name to a `tasklist_id`, then pass it to task tools.
 
 **Check availability / free slots**
 - Use `gcal_free_busy` with the calendars and time range in question.

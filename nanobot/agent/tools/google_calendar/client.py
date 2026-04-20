@@ -68,6 +68,7 @@ class GoogleCalendarClient:
             "singleEvents": "true",  # expand recurring events
             "orderBy": "startTime",
             "maxResults": max_results,
+            "eventTypes": "default",  # exclude focusTime/outOfOffice auto-blocks
         }
         if time_min:
             params["timeMin"] = time_min

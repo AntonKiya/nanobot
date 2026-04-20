@@ -106,6 +106,9 @@ class _LoopHook(AgentHook):
             u.get("completion_tokens", 0),
             u.get("cached_tokens", 0),
         )
+        for tc, result in zip(context.tool_calls, context.tool_results):
+            result_str = str(result)[:500]
+            logger.debug("Tool result: {}() → {}", tc.name, result_str)
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
         return self._loop._strip_think(content)

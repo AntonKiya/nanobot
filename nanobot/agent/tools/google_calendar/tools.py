@@ -528,15 +528,20 @@ def _build_time(dt_str: str, timezone: str | None) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def create_tools(auth: GoogleCalendarAuth) -> list[_GCalBaseTool]:
-    """Return all Google Calendar tools sharing a single client."""
-    client = GoogleCalendarClient(auth)
+    """Return all Google Calendar and Tasks tools sharing a single auth instance."""
+    from nanobot.agent.tools.google_calendar.tasks_client import GoogleTasksClient
+    from nanobot.agent.tools.google_calendar.tasks_tools import create_task_tools
+
+    cal_client = GoogleCalendarClient(auth)
+    tasks_client = GoogleTasksClient(auth)
     return [
-        GCalConnectTool(client),
-        GCalListCalendarsTool(client),
-        GCalListEventsTool(client),
-        GCalSearchEventsTool(client),
-        GCalCreateEventTool(client),
-        GCalUpdateEventTool(client),
-        GCalDeleteEventTool(client),
-        GCalFreeBusyTool(client),
+        GCalConnectTool(cal_client),
+        GCalListCalendarsTool(cal_client),
+        GCalListEventsTool(cal_client),
+        GCalSearchEventsTool(cal_client),
+        GCalCreateEventTool(cal_client),
+        GCalUpdateEventTool(cal_client),
+        GCalDeleteEventTool(cal_client),
+        GCalFreeBusyTool(cal_client),
+        *create_task_tools(tasks_client),
     ]

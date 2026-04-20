@@ -12,7 +12,10 @@ from loguru import logger
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
-_SCOPES = "https://www.googleapis.com/auth/calendar"
+_SCOPES = " ".join([
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/tasks",
+])
 
 
 class _StateEntry:
