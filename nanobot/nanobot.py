@@ -79,6 +79,7 @@ class Nanobot:
             web_config=config.tools.web,
             exec_config=config.tools.exec,
             google_calendar_config=config.tools.google_calendar,
+            aviasales_config=config.tools.aviasales,
             restrict_to_workspace=config.tools.restrict_to_workspace,
             mcp_servers=config.tools.mcp_servers,
             timezone=defaults.timezone,
