@@ -36,7 +36,7 @@ from nanobot.utils.helpers import image_placeholder_text, truncate_text
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, GoogleCalendarConfig, WebToolsConfig
+    from nanobot.config.schema import AviasalesConfig, ChannelsConfig, ExecToolConfig, GoogleCalendarConfig, WebToolsConfig
     from nanobot.cron.service import CronService
 
 
@@ -179,6 +179,7 @@ class AgentLoop:
         web_config: WebToolsConfig | None = None,
         exec_config: ExecToolConfig | None = None,
         google_calendar_config: GoogleCalendarConfig | None = None,
+        aviasales_config: AviasalesConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
@@ -214,6 +215,7 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.google_calendar_config = google_calendar_config
         self.gcal_auth = None  # set by _register_default_tools if gcal is enabled
+        self.aviasales_config = aviasales_config
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
@@ -297,6 +299,17 @@ class AgentLoop:
             )
             for tool in create_tools(self.gcal_auth):
                 self.tools.register(tool)
+        if self.aviasales_config and self.aviasales_config.enable:
+            if not self.aviasales_config.api_token:
+                logger.warning("aviasales: enable=true but api_token is empty; skipping tools registration")
+            else:
+                from nanobot.agent.tools.aviasales import AviasalesClient, build_tools
+                client = AviasalesClient(
+                    api_token=self.aviasales_config.api_token,
+                    market=self.aviasales_config.market,
+                )
+                for tool in build_tools(client):
+                    self.tools.register(tool)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""

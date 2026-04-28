@@ -174,12 +174,23 @@ class GoogleCalendarConfig(Base):
     token_store_path: str = "~/.nanobot/gcal_tokens.json"
 
 
+class AviasalesConfig(Base):
+    """Aviasales (Travelpayouts) Data API configuration."""
+
+    enable: bool = False
+    # Partner API token from travelpayouts.com (sent as X-Access-Token header)
+    api_token: str = ""
+    # Marketplace locale code passed as `market` query param (ru/us/de/...)
+    market: str = "ru"
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     google_calendar: GoogleCalendarConfig = Field(default_factory=GoogleCalendarConfig)
+    aviasales: AviasalesConfig = Field(default_factory=AviasalesConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
