@@ -16,6 +16,19 @@ from nanobot.agent.tools.base import Tool
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
 
+# Internal API fetch buffer — we always pull at least this many tickets so we can
+# report `total_available` even when the agent only wants the top few.
+_API_BUFFER = 30
+
+
+def _cap_and_count(tickets: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    """Slice the list to top `limit` and attach pagination meta."""
+    return {
+        "tickets": tickets[:limit],
+        "shown": min(limit, len(tickets)),
+        "total_available": len(tickets),
+    }
+
 
 def _ok(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
@@ -109,7 +122,12 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
                     "type": "boolean",
                     "description": "True = only unique destinations. Use for 'where can I fly cheap from X' queries.",
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "How many tickets to return to you. Default 5 — show this batch first and offer filters before requesting more. Raise (e.g. to 15) only if user explicitly insists on more options.",
+                },
             },
             "required": ["origin"],
         }
@@ -125,7 +143,7 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
         currency: str = "rub",
         sorting: str = "price",
         unique: bool = False,
-        limit: int = 30,
+        limit: int = 5,
     ) -> str:
         origin_iata, err = _resolve(origin)
         if err:
@@ -141,6 +159,7 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
             if msg:
                 return _err(msg)
 
+        api_limit = max(limit, _API_BUFFER)
         base = {
             "origin": origin_iata,
             "destination": dest_iata,
@@ -149,7 +168,7 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
             "currency": currency,
             "sorting": sorting,
             "unique": unique or None,
-            "limit": limit,
+            "limit": api_limit,
         }
 
         # One-way or no return date — single request.
@@ -158,7 +177,8 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
                 resp = await self._client.prices_for_dates(**base, one_way="true")
             except AviasalesAPIError as e:
                 return _api_error(e)
-            return _ok({"mode": "one_way", "tickets": normalize_list(resp)})
+            payload = _cap_and_count(normalize_list(resp), limit)
+            return _ok({"mode": "one_way", **payload})
 
         # Round-trip — three parallel requests.
         rt_params = dict(base, return_at=return_at, one_way="false")
@@ -179,10 +199,10 @@ class AviasalesSearchDatesTool(_AviasalesBaseTool):
 
         def _bucket(r: Any) -> dict[str, Any]:
             if isinstance(r, AviasalesAPIError):
-                return {"error": f"Aviasales API ({r.status}): {r}", "tickets": []}
+                return {"error": f"Aviasales API ({r.status}): {r}", "tickets": [], "shown": 0, "total_available": 0}
             if isinstance(r, Exception):
-                return {"error": str(r), "tickets": []}
-            return {"tickets": normalize_list(r)}
+                return {"error": str(r), "tickets": [], "shown": 0, "total_available": 0}
+            return _cap_and_count(normalize_list(r), limit)
 
         return _ok(
             {
@@ -381,7 +401,12 @@ class AviasalesPriceRangeTool(_AviasalesBaseTool):
                 "one_way": {"type": "boolean"},
                 "direct": {"type": "boolean"},
                 "currency": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "How many tickets to return to you. Default 5 — show this batch first and offer filters before requesting more.",
+                },
                 "page": {"type": "integer", "minimum": 1},
             },
             "required": ["origin"],
@@ -396,7 +421,7 @@ class AviasalesPriceRangeTool(_AviasalesBaseTool):
         one_way: bool = False,
         direct: bool = False,
         currency: str = "rub",
-        limit: int = 30,
+        limit: int = 5,
         page: int = 1,
     ) -> str:
         origin_iata, err = _resolve(origin)
@@ -408,6 +433,7 @@ class AviasalesPriceRangeTool(_AviasalesBaseTool):
             if err:
                 return _err(err)
 
+        api_limit = max(limit, _API_BUFFER)
         try:
             resp = await self._client.search_by_price_range(
                 origin=origin_iata,
@@ -417,12 +443,12 @@ class AviasalesPriceRangeTool(_AviasalesBaseTool):
                 one_way="true" if one_way else "false",
                 direct=direct or None,
                 currency=currency,
-                limit=limit,
+                limit=api_limit,
                 page=page,
             )
         except AviasalesAPIError as e:
             return _api_error(e)
-        return _ok({"tickets": normalize_list(resp)})
+        return _ok(_cap_and_count(normalize_list(resp), limit))
 
 
 def build_tools(client: AviasalesClient) -> list[Tool]:

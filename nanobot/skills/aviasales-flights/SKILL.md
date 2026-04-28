@@ -1,11 +1,19 @@
 ---
 name: aviasales-flights
 description: "Search flight prices via the Aviasales (Travelpayouts) Data API and return an indicative price plus a live-search link to aviasales.ru. TRIGGER when: user asks about flight prices, wants to fly somewhere, asks 'how much from X to Y', mentions a budget for flights, asks when it's cheaper to fly, or wants to discover cheap directions from a city — even if Aviasales is not mentioned by name."
+always: true
 ---
 
 # Aviasales Flights Skill
 
-Help the user explore flight prices and direct them to a live aviasales.ru search. The agent never sells tickets and never claims a price is final — every answer must include both an indicative price ("от X₽" / "около X₽") and the aviasales.ru link returned by the tool.
+Help the user explore flight prices and direct them to a live aviasales.ru search. The agent never sells tickets and never claims a price is final.
+
+## Hard rules (apply to EVERY response)
+
+1. **Every ticket you mention must carry its own aviasales.ru link.** Wrap each ticket line in a markdown link using the ticket's `link` field, e.g. `[Аэрофлот — от 16 433₽, 26 мая, 1 пересадка](https://www.aviasales.ru/search/...)`. Use the `link` value **verbatim, including the entire query string** (`?t=...&search_date=...&expected_price=...`) — do NOT shorten, clean, or strip parameters. Those tokens deep-link to the specific quote; the bare URL only opens a generic search. Never respond about flight results without per-ticket links — this is the entire point of the skill.
+2. **Always frame the price as indicative.** Use "от X₽" or "около X₽" — never "цена X₽", never "стоит X₽", never present it as the current bookable price. The data is from a 48-hour cache, not live.
+3. **Never paginate.** The tool returns 5 tickets by default along with `total_available`. If `total_available > shown`, do NOT offer "show next 5". Instead say e.g. "нашёл 30 вариантов, показал 5 самых дешёвых" and propose filters: only direct flights, a specific date instead of a month, a specific airline, a different time of day. Only if the user explicitly insists on seeing more options, re-call the tool ONCE with `limit=15` — never go higher, never paginate again after that.
+4. **`is_expired=true` → say so.** If a ticket comes back with `is_expired: true`, phrase as "последняя известная цена была ~X₽, но данные устарели — актуальное по ссылке". Do not silently drop expired tickets.
 
 ## What the data is
 
@@ -72,12 +80,9 @@ The tools resolve city names automatically. If a name has multiple equally-likel
 
 When the user wants ideas without naming a destination, call `aviasales_search_dates` without `destination` and with `unique=true`. The tool returns cheap directions from the origin. Filter the result on your side by IATA codes that match what they asked for (European capitals, beach destinations, warm climate, etc.) using your own geographic knowledge.
 
-## Mandatory phrasing rules
+## Empty result is not 'no tickets'
 
-- **Indicative price only.** Always "от X₽" or "около X₽" — never call a price exact, current, or bookable.
-- **Always include the link.** Every recommendation ends with the `link` field returned by the tool — it is the full `https://www.aviasales.ru/...` URL with route and dates pre-filled.
-- **`is_expired` flag.** Each ticket comes with `is_expired`. If `true`, phrase as "the last known price was ~X₽, but the data is stale — see the link for live pricing." If `false`, "ticket from ~X₽."
-- **Empty result is not 'no tickets'.** If the tool returns no tickets, say "I couldn't find cached data for this route on these dates" and offer the live aviasales.ru search link directly.
+If the tool returns no tickets, say "не нашёл данных по этому маршруту на эти даты" and suggest the user open the live aviasales.ru search directly.
 
 ## Clarification policy
 
@@ -94,7 +99,7 @@ One clarification round only, max 2–3 short questions.
 
 ## Response format
 
-**On success:** one short human sentence per option with the price as "от X₽", airline (use the human name from `airline_name`, not the IATA code), date(s), transfer count, and the link. No raw JSON, no IATA codes shown to the user (except as a fallback when a name didn't resolve).
+**On success:** one bullet per ticket. Each bullet is a markdown link wrapping the whole line — airline (human name from `airline_name`, not the IATA code), price as "от X₽", date(s), transfer count — with the ticket's verbatim `link` as the URL. No raw JSON, no IATA codes shown to the user (except as a fallback when a name didn't resolve). End with one line acknowledging `total_available` if it exceeds `shown` (see Hard rule #3) and suggesting filters.
 
 **On round-trip with multiple variants:** present all variants the tool returned (see Round-trip handling above).
 
